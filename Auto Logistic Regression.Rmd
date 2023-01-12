@@ -1,0 +1,221 @@
+---
+title: ""
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+---
+
+```{r setup, include=FALSE}
+## Global options
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+```{r}
+library(ISLR)
+library(here)
+library(tidymodels)
+library(tidyverse)
+library(ggplot2)
+library(caret)
+```
+
+## Problem 1
+
+This exercise uses the book’s Auto data set, which contains gas mileage, horsepower, and other information for cars. You will develop a model to predict whether a given car gets high or low gas mileage based on the other variables.
+
+1. Create a binary variable, mpg01, that contains a 1 if mpg contains a value above its median, and a 0 if mpg contains a value below its median. Note you may find it helpful to use the data.frame() function to create a single data set containing both mpg01 and the other Auto variables.
+
+```{r}
+Auto <- Auto %>%
+  mutate(mpg01 = as.factor(ifelse(mpg>median(mpg), 1,0)))
+                          
+```
+
+2.Explore the data graphically in order to investigate the association between mpg01 and the other features. Which of the other features seem most likely to be useful in predicting mpg01? Scatterplots and boxplots may be useful tools to answer this question. Describe your findings.
+
+```{r}
+Auto %>% 
+  ggplot(aes(x = horsepower, y= weight, color=mpg01)) +
+  geom_point()
+
+Auto %>% 
+  ggplot(aes(x = displacement, y= acceleration, color = mpg01)) +
+  geom_point()
+
+```
+
+- As horsepower increases weight increases with mpg01 > median(mpg01) at lower values of horsepower and weight.
+- As displacement increases acceleration decreases with mpg01 > median(mpg01) at high values of acceleration and low values of displacement.
+
+3. Split the data into a training set and a test set.
+
+```{r}
+data_split <- initial_split(Auto, prop = 3/4)
+
+train_data <- training(data_split)
+
+test_data <- testing(data_split)
+
+```
+
+4. Perform logistic regression on the training data in order to predict mpg01 using the variables that seemed most associated with mpg01 in (2). What is the test error of the model obtained? Produce a confusion matrix as well.
+
+```{r}
+logistic_mod_spec <- logistic_reg() %>%
+  set_mode("classification") %>%
+  set_engine("glm")
+
+
+Auto_rec <-
+  recipe(mpg01 ~ horsepower + weight + acceleration , data = Auto) %>% 
+  #nominal includes character and factor
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_normalize(all_numeric(), -all_outcomes())
+
+Auto_wf <-
+  workflow() %>%
+  add_recipe(Auto_rec) %>%
+  add_model(logistic_mod_spec)
+  
+Auto_fit <-
+  Auto_wf %>%
+  fit(Auto)
+
+workflow_fit <- Auto_fit %>%
+  pull_workflow_fit()
+
+workflow_fit$fit %>% summary()
+
+preds <- Auto_fit %>%
+  predict(Auto)
+
+Auto_pred <- Auto %>%
+  mutate(
+    predicted_num = preds$.pred_class
+  )
+
+Auto_pred %>%
+  count(predicted_num, mpg01) #Confusion Matrix 
+
+Auto_pred %>%
+  accuracy(truth = mpg01,
+           estimate = predicted_num) #Test Error
+```
+
+- The test error is about 0.9%
+
+5. If you were unsure about the variables you chose to include for (4), fit two more models with different sets of variables. Perform cross-validation all three of these models and compare their test error estimates. Which one was best? How clear was it? Does this make sense?
+
+```{r}
+Auto_rec2 <-
+  recipe(mpg01 ~ year + cylinders + horsepower + weight + origin, data = Auto) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_normalize(all_numeric(), -all_outcomes())
+
+Auto_wf2 <-
+  workflow() %>%
+  add_recipe(Auto_rec2) %>%
+  add_model(logistic_mod_spec)
+  
+Auto_fit2 <-
+  Auto_wf2 %>%
+  fit(Auto)
+
+workflow_fit2 <- Auto_fit2 %>%
+  pull_workflow_fit()
+
+workflow_fit2$fit %>% summary()
+```
+
+```{r}
+Auto_rec3 <-
+  recipe(mpg01 ~ year + horsepower + weight, data = Auto) %>% 
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_normalize(all_numeric(), -all_outcomes())
+
+Auto_wf3 <-
+  workflow() %>%
+  add_recipe(Auto_rec3) %>%
+  add_model(logistic_mod_spec)
+  
+Auto_fit3 <-
+  Auto_wf3 %>%
+  fit(Auto)
+
+workflow_fit3 <- Auto_fit3 %>%
+  pull_workflow_fit()
+
+workflow_fit3$fit %>% summary()
+```
+
+```{r}
+Auto_cvs <- vfold_cv(Auto, v = 5)
+
+Auto1_cv <- logistic_mod_spec %>%
+  fit_resamples(mpg01 ~ horsepower + weight + acceleration, resamples = Auto_cvs)
+
+Auto2_cv <- logistic_mod_spec %>%
+  fit_resamples(mpg01 ~ year + cylinders + horsepower + weight + origin, resamples = Auto_cvs)
+
+Auto3_cv <- logistic_mod_spec %>%
+  fit_resamples(mpg01 ~ year + horsepower + weight, resamples = Auto_cvs)
+```
+
+```{r}
+Auto1_cv %>%
+  collect_metrics()
+
+Auto2_cv %>%
+  collect_metrics()
+
+Auto3_cv %>%
+  collect_metrics()
+```
+- After cross-validation, it looks like model3 is better because of higher roc_auc.
+
+6. How do your results and model comparisons change if you change the probability threshold? That is, if you changed the probability used to predict if a car has high gas mileage do your results change noticeably. Revise your use of the predict() function to output probabilities instead of classifications, and then do the classifications yourself using the following three different thresholds: .5 (default), .7, and .85.
+
+Create confusion matrices and/or accuracies (or errors) for each, and compare the models again.
+
+```{r}
+probabilities <- Auto_fit %>%
+  predict(Auto, type = "prob")
+
+
+Auto1_pred <- Auto %>%
+  mutate(pred_0 = probabilities$.pred_0,
+         pred_1 = probabilities$.pred_1)
+
+Auto_predicted_classes <- Auto1_pred %>%
+  mutate(
+    pred_0.5 = ifelse(pred_0 > 0.5, "0", "1"),
+    pred_0.7 = ifelse(pred_0 > 0.7, "0", "1"),
+    pred_0.85 = ifelse(pred_0 > 0.85, "0", "1")
+  )
+  
+Auto_predicted_classes %>%
+  mutate(correct = (pred_0.5 == mpg01)
+           ) %>%
+  count(correct) %>%
+  mutate(percent = n/sum(n)*100)
+
+Auto_predicted_classes %>%
+  mutate(correct = (pred_0.7 == mpg01)
+           ) %>%
+  count(correct) %>%
+  mutate(percent = n/sum(n)*100)
+
+Auto_predicted_classes %>%
+  mutate(correct = (pred_0.85 == mpg01)
+           ) %>%
+  count(correct) %>%
+  mutate(percent = n/sum(n)*100)
+
+Auto_predicted_classes %>%
+  count(pred_0.5, mpg01)
+
+Auto_predicted_classes %>%
+  count(pred_0.7, mpg01)
+```
+
